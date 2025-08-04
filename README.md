@@ -32,6 +32,21 @@ The core contributions of this work are implemented in the following files:
 | `models/dataloader.py` | `dataset` | Dataloader + data augmentation. |
 | `utils/galore.py` | `SRFTGaLoreProjector` | Implements the SRFT-based low-rank projection replacing SVD in GaLore. |
 
+## Environment Setup:
+We recommend creating a fresh Python 3.10 environment and installing dependencies via pip:
+```bash
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+To install dependencies manually:
+```bash
+pip install torch torchvision accelerate einops opencv-python \
+             scikit-learn scikit-image matplotlib pandas \
+             transformers peft surface-distance tensorly
+```
+
 
 ## Training command:
 
