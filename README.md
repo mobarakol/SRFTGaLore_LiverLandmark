@@ -1,2 +1,18 @@
 # SRFTGaLore_LiverLandmark
-SRFTGaLore for Liver Landmark Segmentation
+
+## Abstract:
+Accurate detection and delineation of anatomical structures in medical imaging are critical for computer-assisted interventions, particularly in laparoscopic liver surgery where 2D video streams limit depth perception and complicate landmark localization. While recent works have leveraged monocular depth cues for enhanced landmark detection, challenges remain in fusing RGB and depth features and in efficiently adapting large-scale vision models to surgical domains. In this paper, we propose a depth-guided liver landmark segmentation framework that integrates semantic and geometric cues via pretrained vision foundation model encoders. Specifically, we employ the encoder of Segment Anything Model V2 (SAM2) to extract RGB-based semantic features and the encoder of Depth Anything V2 (DA2) to extract depth-aware geometric features. To efficiently adapt SAM2 to surgical data, we introduce SRFT-GaLore, a novel low-rank gradient projection method that replaces the computationally expensive SVD in GaLore with a Subsampled Randomized Fourier Transform (SRFT). This reduces projection complexity, enabling efficient fine-tuning of high-dimensional attention layers without sacrificing representational power. Additionally, we design a cross-attention fusion module to effectively integrate depth and RGB modalities for accurate landmark segmentation. On the public L3D dataset, our method achieves a 3.5% absolute improvement in Dice Similarity Coefficient (DSC) and a 14.01-point reduction in Average Symmetric Surface Distance (ASSD) compared to the previous state-of-the-art method D2GPLand. These results demonstrate that our SRFT-GaLore-enhanced dual-encoder framework enables scalable and precise segmentation under real-time, depth-constrained surgical settings.
+
+
+## Dataset:
+This project uses the **L3D dataset** introduced in:
+
+> *Pei, Jialun, et al. "Depth-Driven Geometric Prompt Learning for Laparoscopic Liver Landmark Detection." MICCAI 2024.*
+
+The dataset is publicly available via the [D2GPLand GitHub repository](https://github.com/PJLallen/D2GPLand).  
+All rights belong to the original authors.
+
+## Training command:
+
+```bash
+python train.py
