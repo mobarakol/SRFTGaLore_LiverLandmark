@@ -22,6 +22,17 @@ This project uses the **L3D dataset** introduced in:
 The dataset is publicly available via the [D2GPLand GitHub repository](https://github.com/PJLallen/D2GPLand).  
 All rights belong to the original authors.
 
+##  Key Components and Novelty
+
+The core contributions of this work are implemented in the following files:
+
+| File | Class / Function | Description |
+|------|------------------|-------------|
+| `models/model.py` | `Model` | Main segmentation framework that integrates SAM2, DA2, SRFT-GaLore, and cross-attention fusion.  |
+| `models/dataloader.py` | `dataset` | Dataloader + data augmentation. |
+| `utils/galore.py` | `SRFTGaLoreProjector` | Implements the SRFT-based low-rank projection replacing SVD in GaLore. |
+
+
 ## Training command:
 
 ```bash
