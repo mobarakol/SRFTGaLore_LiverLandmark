@@ -26,7 +26,7 @@ The core contributions of this work are implemented in the following files:
 |------|------------------|-------------|
 | `models/model.py` | `Model` | Main segmentation framework that integrates SAM2, DA2, SRFT-GaLore, and cross-attention fusion.  |
 | `models/dataloader.py` | `dataset` | Dataloader + data augmentation. |
-| `utils/galore.py` | `SRFTGaLoreProjector` | Implements the SRFT-based low-rank projection replacing SVD in GaLore. |
+| `utils/galore.py` | `GaLoreProjector` | Implements the SRFT-based low-rank projection replacing SVD in GaLore. |
 
 ## Environment Setup:
 We recommend creating a fresh Python 3.10 environment and installing dependencies via pip:
