@@ -16,3 +16,9 @@ All rights belong to the original authors.
 
 ```bash
 python train.py
+```
+
+## Inference command:
+```bash
+python inference.py
+```
