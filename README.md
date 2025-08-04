@@ -1,9 +1,7 @@
 # SRFTGaLore_LiverLandmark
 
 ## Abstract:
-Accurate detection and delineation of anatomical structures in medical imaging are critical for computer-assisted interventions, particularly in laparoscopic liver surgery, where 2D video streams limit depth perception and complicate landmark localization.
-
-While recent works have leveraged monocular depth cues for enhanced landmark detection, challenges remain in fusing RGB and depth features and in efficiently adapting large-scale vision models to surgical domains.
+Accurate detection and delineation of anatomical structures in medical imaging are critical for computer-assisted interventions, particularly in laparoscopic liver surgery, where 2D video streams limit depth perception and complicate landmark localization.While recent works have leveraged monocular depth cues for enhanced landmark detection, challenges remain in fusing RGB and depth features and in efficiently adapting large-scale vision models to surgical domains.
 
 In this paper, we propose a **depth-guided liver landmark segmentation framework** that integrates semantic and geometric cues via pretrained vision foundation model encoders. Specifically:
 - We use the **encoder of Segment Anything Model V2 (SAM2)** to extract RGB-based semantic features.
