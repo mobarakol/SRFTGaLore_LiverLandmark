@@ -7,11 +7,11 @@ In this paper, we propose a **depth-guided liver landmark segmentation framework
 - We use the **encoder of Segment Anything Model V2 (SAM2)** to extract RGB-based semantic features.
 - We use the **encoder of Depth Anything V2 (DA2)** to extract depth-aware geometric features.
 
-To efficiently adapt SAM2 to surgical data, we introduce **SRFT-GaLore**, a novel low-rank gradient projection method that replaces the computationally expensive SVD in GaLore with a **Subsampled Randomized Fourier Transform (SRFT)**. This reduces projection complexity, enabling efficient fine-tuning of high-dimensional attention layers without sacrificing representational power. Additionally, we design a **cross-attention fusion module** to effectively integrate depth and RGB modalities for accurate landmark segmentation.
+To efficiently adapt DA2 and SAM2 to surgical data, we introduce **SRFT-GaLore**, a novel low-rank gradient projection method that replaces the computationally expensive SVD in GaLore with a **Subsampled Randomized Fourier Transform (SRFT)**. This reduces projection complexity, enabling efficient fine-tuning of high-dimensional attention layers without sacrificing representational power. Additionally, we design a **cross-attention fusion module** to effectively integrate depth and RGB modalities for accurate landmark segmentation.
 
 
 ## Dataset:
-This project uses the **L3D dataset** introduced in:
+This project uses the our proposed **LLSD dataset** and **L3D dataset** introduced in:
 
 > *Pei, Jialun, et al. "Depth-Driven Geometric Prompt Learning for Laparoscopic Liver Landmark Detection." MICCAI 2024.*
 
