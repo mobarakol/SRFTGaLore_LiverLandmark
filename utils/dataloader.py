@@ -1,5 +1,6 @@
 import numpy as np
 import cv2
+import torch
 from torch.utils.data import Dataset
 from torchvision import transforms as T
 import xml.etree.ElementTree as ET
@@ -7,13 +8,16 @@ import json
 from skimage.metrics import structural_similarity as SSIM
 from glob import glob
 import random
-from PIL import Image
-import torch
+import os
+import numpy as np
 
+import matplotlib.pyplot as plt
 
-class dataset(Dataset):
-    def __init__(self, root='/L3D_Dataset', transform=None, mode='train'):
-        self.img_path_all = glob(root + '/images/*.jpg') 
+class LandmarkDataset(Dataset):
+    def __init__(self, root='../L3D_Dataset', transform=None, mode='train'):
+        # file path
+        self.img_path_all = glob(root + '/images/*.png')  # Update the path and pattern
+        
         if transform:
             self.transform = transform      
         else:
@@ -26,37 +30,17 @@ class dataset(Dataset):
 
     def __getitem__(self, idx):
         img_path = self.img_path_all[idx]
-
         image = load_image(img_path)
         mask = load_mask(img_path)
         depth = load_depth(img_path)
+        image = self.transform(image)
+        mask = torch.from_numpy(mask).long()
+        depth = self.transform(depth)
 
-        image_pil = Image.fromarray(image).convert("RGB")
-        depth_pil = Image.fromarray(depth).convert("L")
-
-        mask_combined = mask.transpose(1, 2, 0)
-        mask_combined = mask_combined.astype(np.uint8)
-        mask_pil = Image.fromarray(mask_combined)
-
-        image = self.transform(image_pil)
-        depth = self.transform(depth_pil)
-        mask = self.transform(mask_pil)
-
-        # Apply data augmentation
-        if self.mode == 'train' :
-            if random.random() < 0.5:
-                angle = random.uniform(-15, 15)
-                image = T.functional.rotate(image, angle, interpolation=T.InterpolationMode.BILINEAR)
-                depth = T.functional.rotate(depth, angle, interpolation=T.InterpolationMode.BILINEAR)
-                mask = T.functional.rotate(mask, angle, interpolation=T.InterpolationMode.NEAREST)
-
-            if random.random() < 0.5:
-                flip_dim = random.choice([1, 2]) 
-                image = torch.flip(image, dims=[flip_dim])
-                depth = torch.flip(depth, dims=[flip_dim])
-                mask = torch.flip(mask, dims=[flip_dim])
-
-        return image, depth, mask, str(img_path)
+        if self.mode == 'train':
+            return image, depth, mask, str(img_path)
+        else:
+            return image, depth, mask, str(img_path)
 
 
 def load_image(path):
@@ -67,110 +51,81 @@ def load_image(path):
 
 
 def load_depth(path):
-    img = cv2.imread(str(path).replace('images', 'depth_AdelaiDepth').replace('jpg', 'png'), 0)
+    img = cv2.imread(str(path))
     img = cv2.resize(img, (1024, 1024))
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) 
 
     return img.astype(np.uint8)
 
 
 def load_mask(path):
-    mask_path = str(path).replace('images', 'labels').replace('jpg', 'json')
-    mask = load_json(mask_path)
-    mask = cv2.resize(mask, (1024, 1024))
+    mask_path = str(path).replace('images', 'masks_gt').replace('.png', '_convert.png')
+    bgr_mask = cv2.imread(str(mask_path))
+    if bgr_mask is None:
+        print(f"Error: can't read {mask_path}")
+        return np.zeros(shape=(4, 1024, 1024), dtype=np.uint8)
+
+    rgb_mask = cv2.cvtColor(bgr_mask, cv2.COLOR_BGR2RGB)
+    rgb_mask = cv2.resize(rgb_mask, (1024, 1024), interpolation=cv2.INTER_NEAREST)
+
+    # create class map
+    class_map = np.zeros((1024, 1024), dtype=np.uint8) 
+    class_map[np.all(rgb_mask == [255, 0, 0], axis=2)] = 1  # red   -> Class 1
+    class_map[np.all(rgb_mask == [0, 255, 0], axis=2)] = 2  # green -> Class 2
+    class_map[np.all(rgb_mask == [0, 0, 255], axis=2)] = 3  # blue  -> Class 3
+
+    # create One-Hot encoded masks
     masks = np.zeros(shape=(4, 1024, 1024), dtype=np.uint8)
-    masks[0][mask == 0] = 255
-    masks[1][mask == 1] = 255
-    masks[2][mask == 2] = 255
-    masks[3][mask == 3] = 255
+
+    # fill 4 channels based on class map
+    masks[0][class_map == 0] = 255  # background
+    masks[1][class_map == 1] = 255  # Class 1
+    masks[2][class_map == 2] = 255  # Class 2
+    masks[3][class_map == 3] = 255  # Class 3
 
     return masks
 
 
-def load_xml(path):
-    img = np.zeros((1080, 1920), dtype=np.uint8)
-    tree = ET.parse(path)
-    root = tree.getroot()
-
-    for contour in root.findall('contour'):
-        ctype = contour.find('contourType').text
-
-        # Set the color based on contourType
-        if ctype == 'Ridge':
-            color = 1  # Red
-        elif ctype == 'Silhouette':
-            color = 2  # Green
-        else:
-            color = 3  # Blue
-
-        # Get the x and y coordinates
-        x_coords = [float(x) for x in contour.find('imagePoints/x').text.split(',')]
-        y_coords = [float(y) for y in contour.find('imagePoints/y').text.split(',')]
-
-        # Mark the points on the image
-        for x, y in zip(x_coords, y_coords):
-            cv2.circle(img, (int(x), int(y)), 3, color)
-
-    return img
-
-
-def load_json(path):
-    image = np.zeros((1080, 1920), dtype=np.uint8)
-    if '_31' in path or '_36' in path or '_25' in path or '_29' in path:
-        image = np.zeros((2160, 3840), dtype=np.uint8)
-
-    # Load JSON file
-    with open(path, 'r') as f:
-        data = json.load(f)
-
-    # Iterate over shapes in data
-    for shape in data['shapes']:
-        points = shape['points']
-        label = shape['label']
-
-        # Choose line color based on label
-        if label.startswith('r'):
-            color = 1
-        elif label.startswith('s'):
-            color = 2
-        elif label.startswith('l'):
-            color = 3
-        else:
-            color = 0
-
-        # Iterate over points in shape
-        for i in range(1, len(points)):
-            pt1 = tuple(map(int, points[i - 1]))
-            pt2 = tuple(map(int, points[i]))
-
-            # Draw line on image
-            num = 30
-            cv2.line(image, pt1, pt2, color, num)
-            # print("num: ", num)
-
-    return image
-
-
-# save ground truth and prediction images (comparison)
 def apply_color(mask):
     h, w = mask.shape
     color_map = {
         0: (0, 0, 0),      # Black
-        1: (0, 0, 255),    # Red
+        1: (255, 0, 0),    # Red
         2: (0, 255, 0),    # Green
-        3: (255, 0, 0)     # Blue
+        3: (0, 0, 255)     # Blue
     }
     color_mask = np.zeros((h, w, 3), dtype=np.uint8)
     for class_id, color in color_map.items():
         color_mask[mask == class_id] = color
     return color_mask
 
-def save_img(pred, gt):
 
-    pred_color = apply_color(pred)
-    gt_color = apply_color(gt)
+def save_and_show_img(image, pred_mask, gt_mask, filename, loss, save_path):
 
-    comparison = np.concatenate((gt_color, pred_color), axis=1)  # 並排
-    return comparison
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+
+    image = np.clip(image, 0, 255).astype(np.uint8)
+
+    fig, axs = plt.subplots(1, 3, figsize=(12, 4), subplot_kw=dict(xticks=[], yticks=[]))
+    fig.suptitle(f"{os.path.basename(filename)} | Loss: {loss:.4f}", fontsize=12)
+
+    pred_color = apply_color(pred_mask)
+    gt_color = apply_color(gt_mask)
+
+    axs[0].imshow(image)
+    axs[0].set_title("Input Image")
+
+    axs[1].imshow(pred_color, interpolation="none")
+    axs[1].set_title("Predicted Mask")
+
+    axs[2].imshow(gt_color, interpolation="none")
+    axs[2].set_title("Ground Truth")
+
+    # save image
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    plt.savefig(save_path)
+    plt.close(fig)
+
 
 def ssim(img1, img2):
     img1 = cv2.resize(img1, (224, 224))
