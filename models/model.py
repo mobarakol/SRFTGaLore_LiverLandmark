@@ -7,8 +7,9 @@ import torchvision.transforms as T
 from torch import nn, Tensor
 from models.context_modules import get_context_module
 from models.model_utils import ConvBNAct, Swish, Hswish, SqueezeAndExcitation
-from models.decoder import Decoder
-from utils.galore import GaLoreAdamW
+from models.decoder_v15 import Decoder
+from utils.galore_v3 import GaLoreAdamW
+from segment_anything import sam_model_registry
 
 # DA2 imports
 from transformers import AutoImageProcessor
@@ -16,9 +17,19 @@ from transformers import DepthAnythingForDepthEstimation
 
 # SAM2 imports
 from sam2.build_sam import build_sam2
+from sam2.sam2_image_predictor import SAM2ImagePredictor
+
+
+class Edge_Prototypes(nn.Module):
+    def __init__(self, num_classes=3, feat_dim=256):
+        super(Edge_Prototypes, self).__init__()
+        self.class_embeddings = nn.Embedding(num_classes, feat_dim)
+
+    def forward(self):
+        return self.class_embeddings.weight
+
 
 class Attention(nn.Module):
-
     def __init__(
             self,
             embedding_dim: int,
@@ -39,12 +50,12 @@ class Attention(nn.Module):
     def _separate_heads(self, x: Tensor, num_heads: int) -> Tensor:
         b, n, c = x.shape
         x = x.reshape(b, n, num_heads, c // num_heads)
-        return x.transpose(1, 2)
+        return x.transpose(1, 2)  # B x N_heads x N_tokens x C_per_head
 
     def _recombine_heads(self, x: Tensor) -> Tensor:
         b, n_heads, n_tokens, c_per_head = x.shape
         x = x.transpose(1, 2)
-        return x.reshape(b, n_tokens, n_heads * c_per_head)
+        return x.reshape(b, n_tokens, n_heads * c_per_head)  # B x N_tokens x C
 
     def forward(self, q: Tensor, k: Tensor, v: Tensor) -> Tensor:
         # Input projections
@@ -59,7 +70,7 @@ class Attention(nn.Module):
 
         # Attention
         _, _, _, c_per_head = q.shape
-        attn = q @ k.permute(0, 1, 3, 2)  
+        attn = q @ k.permute(0, 1, 3, 2)  # B x N_heads x N_tokens x N_tokens
         attn = attn / math.sqrt(c_per_head)
         attn = torch.softmax(attn, dim=-1)
 
@@ -71,13 +82,12 @@ class Attention(nn.Module):
         return out
 
 
-
 def get_last_n_block_outputs(sam_encoder, image):
+    # outputs = sam_encoder.base_model.model(image)
     outputs = sam_encoder(image)
 
-    out = outputs["vision_features"] 
+    out = outputs["vision_features"]  # [B, C, H, W]
     fpn = outputs["backbone_fpn"]  
-
 
     skip3 = fpn[0]
     skip2 = fpn[1]
@@ -90,9 +100,10 @@ class CrossAttentionFuse(nn.Module):
     def __init__(self, embed_dim1, embed_dim2, num_heads):
         super().__init__()
         self.embed_dim1 = embed_dim1  
-        self.embed_dim2 = embed_dim2 
+        self.embed_dim2 = embed_dim2  
         self.num_heads = num_heads
 
+        # Project mat2 to the same dim as mat1 for attention compatibility
         self.proj_mat2 = nn.Linear(embed_dim2, embed_dim1)
         self.cross_attn = nn.MultiheadAttention(embed_dim1, num_heads)
         
@@ -101,33 +112,41 @@ class CrossAttentionFuse(nn.Module):
         _, C2, _, _ = mat2.shape
 
         # Flatten spatial dimensions
-        x1 = mat1.view(B, C1, -1).permute(2, 0, 1) 
-        x2 = mat2.view(B, C2, -1).permute(2, 0, 1)  
+        x1 = mat1.view(B, C1, -1).permute(2, 0, 1)  # [HW, B, C1]
+        x2 = mat2.view(B, C2, -1).permute(2, 0, 1)  # [HW, B, C2]
 
-        x2_proj = self.proj_mat2(x2)  
+        # Project x2 to match C1
+        x2_proj = self.proj_mat2(x2)  # [HW, B, C1]
 
+        # Cross-attention: Query=x1, Key/Value=x2_proj
+        # Output: [HW, B, C1]
         attn_output, _ = self.cross_attn(query=x1, key=x2_proj, value=x2_proj)
 
         # Add & reshape to original mat1 shape
-        fused = attn_output.permute(1, 2, 0).contiguous().view(B, C1, H, W)  
+        fused = attn_output.permute(1, 2, 0).contiguous().view(B, C1, H, W) 
         return fused
 
 
-
-class Model(nn.Module):
+class D2GPLand(nn.Module):
     def __init__(self,
                  height=256,
                  width=480,
                  num_classes=4,
+                 encoder='resnet34',
+                 encoder_block='BasicBlock',
                  channels_decoder=None,
-
+                 pretrained_on_imagenet=True,
+                 pretrained_dir='/results_nas/moko3016/'
+                                'moko3016-efficient-rgbd-segmentation/'
+                                'imagenet_pretraining',
                  activation='relu',
+                 input_channels=3,
                  encoder_decoder_fusion='add',
                  context_module='ppm',
                  nr_decoder_blocks=None, 
                  weighting_in_encoder='None',
                  upsampling='bilinear'):
-        super(Model, self).__init__()
+        super(D2GPLand, self).__init__()
 
         if channels_decoder is None:
             channels_decoder=[256, 256, 256]
@@ -150,25 +169,32 @@ class Model(nn.Module):
         
 
         # -------------- Add SAM2 encoder --------------
+        # 1. Load configuration and checkpoint
         model_cfg = "configs/sam2.1/sam2.1_hiera_l.yaml"
         checkpoint = "sam2.1_hiera_large.pt" 
 
+        # 2. Build the SAM2 image model
         sam2_model = build_sam2(model_cfg, checkpoint, device="cuda")
+
+        # 3. Get the encoder (backbone) from SAM2
         sam2_encoder = sam2_model.image_encoder
 
-        # SRFT GaLore
+        # 4. Apply GaLore to encoder
         target_modules_list = ["attn.qkv", "attn.proj"]
         galore_params = []
         id_galore_params = []
 
         for module_name, module in sam2_encoder.named_modules():
             if isinstance(module, nn.Linear) and any(t in module_name for t in target_modules_list):
+                
                 if hasattr(module, "weight") and module.weight is not None:
                     module.weight.requires_grad = True
                     galore_params.append(module.weight)
                     id_galore_params.append(id(module.weight))
+                    
                 if hasattr(module, "bias") and module.bias is not None:
-                    module.bias.requires_grad = False 
+                    module.bias.requires_grad = False  
+                    
             else:
                 for param in module.parameters():
                     param.requires_grad = False
@@ -182,16 +208,15 @@ class Model(nn.Module):
                 param.requires_grad = False
         self._galore_params = galore_params
         self._id_galore_params = id_galore_params
+
+        # 5. Assign to self.sam2_encoder
         self.sam2_encoder = sam2_encoder
-
-
         # ----------------------------------------------
+
         self.first_conv = ConvBNAct(1, 3, kernel_size=1,
                                     activation=self.activation)
-
         self.mid_img_conv = ConvBNAct(512, 256, kernel_size=1,
                                       activation=self.activation)
-
         self.channels_decoder_in = 256 
 
         if weighting_in_encoder == 'SE-add':
@@ -246,19 +271,29 @@ class Model(nn.Module):
         )
 
         self.fuse_model = CrossAttentionFuse(embed_dim1=256, embed_dim2=256, num_heads=2) 
-
-        # DA2 encoder for depth
         model_name = "depth-anything/Depth-Anything-V2-Small-hf"
+
+        #  ----------- DA2 finetune with GaLore -----------
         self.da2_processor = AutoImageProcessor.from_pretrained(model_name)
         da2_model = DepthAnythingForDepthEstimation.from_pretrained(model_name)
         self.da2_encoder = da2_model.backbone 
-        # freeze the DA2 encoder
-        for param in self.da2_encoder.parameters():
-            param.requires_grad = False
+        print("Applying GaLore to DA2 encoder...")
+        for module_name, module in self.da2_encoder.named_modules():
+            if isinstance(module, nn.Linear) and any(t in module_name for t in target_modules_list):
+                if hasattr(module, "weight") and module.weight is not None:
+                    module.weight.requires_grad = True
+                    galore_params.append(module.weight)    
+                    id_galore_params.append(id(module.weight))
+                if hasattr(module, "bias") and module.bias is not None:
+                    module.bias.requires_grad = False 
+            else:
+                for param in module.parameters():
+                    param.requires_grad = False
+                    
         self.depth_conv = ConvBNAct(channels_in=384, channels_out=256, kernel_size=1, activation=self.activation)
 
     def get_galore_optimizer(self, lr, weight_decay, rank):
-        print("Applying GaLore to model with rank:", rank)
+        print("Applying GaLore to D2GP model with rank:", rank)
         regular_params = [
             p for p in self.parameters()
             if p.requires_grad and id(p) not in self._id_galore_params
@@ -266,38 +301,46 @@ class Model(nn.Module):
 
         param_groups = [
             {'params': regular_params},
-            {'params': self._galore_params, 'rank': rank, 'update_proj_gap': 50, 'scale': 1, 'proj_type': "std"}
+            {'params': self._galore_params, 'rank': rank, 'update_proj_gap': 50, 'scale': 1, 'proj_type': "SRFT"}
         ]
 
         optimizer = GaLoreAdamW(param_groups, lr=lr, weight_decay=weight_decay)
+        
+        # Optional: print total trainable params
+        total_trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        print(f"GaLore applied in-model. Trainable params: {total_trainable_params / 1e6:.2f}M")
+
         return optimizer
 
+
     def forward(self, image, depth):
-        # ----- DA2 encoder for depth ------
+
         with torch.no_grad():
             inputs = self.da2_processor(images=image, return_tensors="pt", do_rescale=False)
             device = next(self.da2_encoder.parameters()).device
             pixel_values = inputs["pixel_values"].to(device)
             features = self.da2_encoder(pixel_values)
 
-            feat = features.feature_maps[-1] 
+            feat = features.feature_maps[-1]  
             B, N, C = feat.shape
             H = W = int(N ** 0.5) 
-            feat = feat[:, :H*W, :] 
-            feat = feat.permute(0, 2, 1).reshape(B, C, H, W) 
-            feat = self.depth_conv(feat) 
+            feat = feat[:, :H*W, :]  
+            feat = feat.permute(0, 2, 1).reshape(B, C, H, W)  
+            feat = self.depth_conv(feat)  
 
-        depth_feat = F.interpolate(feat, size=(64, 64), mode="bilinear", align_corners=False) # [B, 256, 64, 64]
+        depth_feat = F.interpolate(feat, size=(64, 64), mode="bilinear", align_corners=False)
 
         # ----- SAM encoder for RGB ------
         out, skip1, skip2, skip3  = get_last_n_block_outputs(self.sam2_encoder, image)
 
-       # ----- Cross Attention Fusion ------
+        # ----- Cross Attention Fusion ------
         out_resized = F.interpolate(out, size=depth_feat.shape[-2:], mode='bilinear', align_corners=False)
         fused_feat = self.fuse_model(depth_feat, out_resized) 
+        target_size = (256, 256) 
         
         outs = [fused_feat, skip3, skip2, skip1]
 
         outs, out_visual = self.decoder(enc_outs=outs) 
-        outs = F.log_softmax(outs, dim=1) 
+        outs = F.log_softmax(outs, dim=1)
+
         return outs, depth_feat
